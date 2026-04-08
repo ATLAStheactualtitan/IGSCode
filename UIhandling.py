@@ -1,5 +1,6 @@
 import os
 import sys
+import subprocess
 
 # Must be set before ANY Qt import so macOS can find the cocoa platform plugin.
 # We compute the path without importing PySide6 first (which would trigger its
@@ -31,9 +32,21 @@ from PySide6.QtWidgets import (
     QGraphicsItemGroup, QScrollArea, QToolTip, QFileDialog, QMessageBox,
 )
 
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
-ANNOT_ASSETS_DIR = os.path.join(os.path.dirname(__file__), "Annotassets")
+
+def _resource_root() -> str:
+    # PyInstaller one-folder/one-file builds expose files through _MEIPASS.
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return str(getattr(sys, "_MEIPASS"))
+    return os.path.dirname(__file__)
+
+
+RESOURCE_ROOT = _resource_root()
+ASSETS_DIR = os.path.join(RESOURCE_ROOT, "assets")
+ANNOT_ASSETS_DIR = os.path.join(RESOURCE_ROOT, "Annotassets")
+APP_ICON_PATH = os.path.join(ASSETS_DIR, "IGS.png")
 BASE_URL   = "https://war-service-live.foxholeservices.com/api"
+REPO_URL = "https://github.com/ATLAStheactualtitan/IGSCode"
+REPO_COMMITS_API = "https://api.github.com/repos/ATLAStheactualtitan/IGSCode/commits/main"
 
 TOOL_SELECT   = "select"
 TOOL_LINE     = "line"
@@ -123,6 +136,75 @@ class WarAPIClient:
         response = self._session.get(f"{self.base_url}{endpoint}", timeout=10)
         response.raise_for_status()
         return response.json()
+
+
+def _local_git_commit(repo_dir: str) -> str | None:
+    """Return local HEAD commit hash if this app is running from a git checkout."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_dir, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        commit = result.stdout.strip()
+        return commit if commit else None
+    except Exception:
+        return None
+
+
+def _latest_repo_commit() -> tuple[str | None, str | None]:
+    """Return latest remote commit hash and URL from GitHub."""
+    try:
+        response = requests.get(REPO_COMMITS_API, timeout=4)
+        response.raise_for_status()
+        data = response.json() if response.content else {}
+        if not isinstance(data, dict):
+            return None, None
+        sha = data.get("sha")
+        html_url = data.get("html_url") or REPO_URL
+        if isinstance(sha, str) and sha:
+            return sha, html_url if isinstance(html_url, str) else REPO_URL
+        return None, None
+    except Exception:
+        return None, None
+
+
+def check_for_new_version(repo_dir: str) -> dict:
+    """Compare local commit with GitHub HEAD and report update availability."""
+    local_sha = _local_git_commit(repo_dir)
+    remote_sha, remote_url = _latest_repo_commit()
+
+    if remote_sha is None:
+        return {
+            "status": "unavailable",
+            "message": "Update check unavailable",
+        }
+
+    if local_sha is None:
+        return {
+            "status": "unknown-local",
+            "message": "Cannot determine local version",
+            "remote_sha": remote_sha,
+            "remote_url": remote_url or REPO_URL,
+        }
+
+    if local_sha != remote_sha:
+        return {
+            "status": "update-available",
+            "message": "A newer version is available on GitHub",
+            "local_sha": local_sha,
+            "remote_sha": remote_sha,
+            "remote_url": remote_url or REPO_URL,
+        }
+
+    return {
+        "status": "up-to-date",
+        "message": "You are running the latest version",
+        "local_sha": local_sha,
+        "remote_sha": remote_sha,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1055,6 +1137,8 @@ class MainWindow(QMainWindow):
         self._variant_buttons: dict[tuple[str, str], QToolButton] = {}
 
         self.setWindowTitle("IGS – Foxhole Map Annotator")
+        if os.path.exists(APP_ICON_PATH):
+            self.setWindowIcon(QIcon(APP_ICON_PATH))
         self.resize(1400, 900)
         self._apply_dark_theme()
         self._build_ui()
@@ -1897,8 +1981,35 @@ def launch():
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    if os.path.exists(APP_ICON_PATH):
+        app.setWindowIcon(QIcon(APP_ICON_PATH))
     window = MainWindow(client, hexagons, war_number=war_number)
     window.show()
+
+    update_info = check_for_new_version(os.path.dirname(__file__))
+    status = update_info.get("status")
+    if status == "update-available":
+        remote_url = str(update_info.get("remote_url", REPO_URL))
+        local_short = str(update_info.get("local_sha", ""))[:7]
+        remote_short = str(update_info.get("remote_sha", ""))[:7]
+        window.status_bar.showMessage(
+            f"Update available: local {local_short} -> remote {remote_short}"
+        )
+        QMessageBox.information(
+            window,
+            "Update Available",
+            (
+                "A newer version of this app is available.\n\n"
+                f"Local:  {local_short}\n"
+                f"Remote: {remote_short}\n\n"
+                f"Repository: {remote_url}"
+            ),
+        )
+    elif status == "up-to-date":
+        window.status_bar.showMessage("Version check: app is up to date")
+    else:
+        window.status_bar.showMessage("Version check unavailable")
+
     sys.exit(app.exec())
 
 
