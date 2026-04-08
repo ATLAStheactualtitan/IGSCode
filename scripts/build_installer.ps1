@@ -9,7 +9,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 Write-Host "[1/3] Building app with PyInstaller..."
-& $PythonExe -m PyInstaller --noconfirm --clean --name IGSMapAnnotator --windowed --add-data "assets;assets" --add-data "Annotassets;Annotassets" UIhandling.py
+& $PythonExe -m PyInstaller --noconfirm --clean --name IGSMapAnnotator --windowed --icon="assets\IGS.ico" --add-data "assets;assets" --add-data "Annotassets;Annotassets" UIhandling.py
 
 if (-not (Test-Path "dist\IGSMapAnnotator\IGSMapAnnotator.exe")) {
     throw "Build failed: dist\\IGSMapAnnotator\\IGSMapAnnotator.exe not found."
