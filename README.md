@@ -1,79 +1,102 @@
 # IGS Map Annotator
 
-IGS Map Annotator is a desktop app for planning and annotating Foxhole hex maps.
-It provides drawing, symbol stamping, map grid references, measurement tools, and PNG export with a legend.
+IGS Map Annotator is a Windows app for drawing and planning on Foxhole hex maps.
 
-## What The App Does
+Use it to place symbols, draw tactical overlays, measure distance and azimuth, and export a clean PNG of exactly what you see on screen.
 
-- Loads local hex map images from `assets/`.
-- Fetches live map metadata from the Foxhole War API.
-- Lets you annotate with:
-  - Select/move
-  - Line, Arrow, Tank line, Infantry line
-  - Filled Polygon
-  - Filled Circle
+## Quick Start (Downloaded App)
+
+1. Open the app executable.
+2. Pick a hex from the Hex dropdown at the top.
+3. Choose a drawing tool or symbol.
+4. Add your markings on the map.
+5. Click Export PNG to save your annotated view with legend.
+
+## Main Features
+
+- Draw tools:
+  - Line
+  - Arrow
+  - Tank line
+  - Infantry line
+  - Filled polygon
+  - Filled circle
   - Text labels
   - Erase
-  - Ruler (distance + azimuth)
-- Lets you stamp tactical symbols from `Annotassets/` in Friendly/Enemy variants.
-- Exports the visible viewport to PNG with a generated legend.
-- Checks GitHub on launch to notify when a newer version exists.
+- Symbol stamping:
+  - Categorized symbol selector on the left
+  - Friendly (F) and Enemy (E) variants
+- Ruler tool:
+  - Shows live distance and azimuth from an origin point
+  - Distance uses 125 meters per large grid square
+  - Azimuth uses 0 degrees at straight up and increases clockwise
+- Export:
+  - Saves the visible map area to PNG
+  - Includes a legend of icons/lines used in that view
 
-## Key Rules/Behaviors
+## Interface Guide
 
-- Grid overlay uses 17 columns (A-Q) and 15 rows (1-15).
-- Ruler distance assumes one large grid square is 125 meters.
-- Ruler azimuth uses 0 degrees = straight up, clockwise positive.
-
-## UI Overview
-
-- Left panel: categorized symbol tiles with Friendly (F) and Enemy (E) variant buttons.
+- Left panel:
+  - Symbol categories and symbol tiles
+  - Click F or E to select which variant to stamp
 - Top ribbon:
-  - Row 1: drawing tools and color controls.
-  - Row 2 (hover-reveal): formatting, zoom, undo/clear, export.
+  - Row 1 always visible: map and drawing/color controls
+  - Row 2 appears on hover: width/text, zoom, undo, clear, export
+- Map area:
+  - Mouse wheel zooms
+  - Middle mouse pans
+  - Grid coordinates are shown near the cursor
 
-## Project Layout
+## Tool Usage
 
-- `UIhandling.py`: main application source.
-- `fetch_hex_images.py`: helper for map image acquisition.
-- `assets/`: map images and app icon (`IGS.png`).
-- `Annotassets/`: annotation symbol images.
+- Line/Arrow/Tank/Inf:
+  - Left click to place nodes
+  - Right click to finish
+- Polygon:
+  - Left click to place corners
+  - Right click to close/fill
+- Circle:
+  - Left click center
+  - Move mouse
+  - Left click edge to commit
+- Ruler:
+  - Left click sets origin
+  - Move mouse to read distance and azimuth
+  - Right click or Esc clears ruler
+- Text:
+  - Left click to place editable label
+- Erase:
+  - Left click an annotation to remove it
 
-## Requirements
+## Keyboard Shortcuts
 
-- Python 3.10+ (tested in a venv workflow)
-- Packages:
-  - `PySide6`
-  - `requests`
-  - `pyinstaller` (only for building an executable)
+- S: Select
+- L: Line
+- A: Arrow
+- Z: Tank line
+- W: Infantry line
+- P: Polygon
+- C: Circle
+- R: Ruler
+- T: Text
+- E: Erase
+- Ctrl+Z: Undo
+- Ctrl++ / Ctrl+-: Zoom in/out
+- Esc: Cancel active drawing mode action
 
-## Run From Source
+## Update Notification
 
-```powershell
-python UIhandling.py
-```
+At launch, the app checks GitHub for a newer version and notifies you if one is available.
 
-## Build A Windows App (PyInstaller)
+Repository:
 
-```powershell
-python -m PyInstaller --noconfirm --clean --name IGSMapAnnotator --windowed --add-data "assets;assets" --add-data "Annotassets;Annotassets" UIhandling.py
-```
+- https://github.com/ATLAStheactualtitan/IGSCode
 
-Build output:
+## Troubleshooting
 
-- `dist/IGSMapAnnotator/IGSMapAnnotator.exe`
-
-Notes:
-
-- The app window icon is loaded from `assets/IGS.png` at runtime.
-- If you want the Windows EXE file icon itself changed in Explorer, provide an `.ico` file and add `--icon path\\to\\icon.ico` to the PyInstaller build command.
-
-## Update Check
-
-On launch, the app compares:
-
-- Local git `HEAD` commit hash
-- Latest commit on `main` from the repository:
-  - `https://github.com/ATLAStheactualtitan/IGSCode`
-
-If newer remote commit is found, the app shows an update notification.
+- If map images are missing:
+  - Ensure the assets folder is present next to the executable.
+- If symbols are missing:
+  - Ensure the Annotassets folder is present next to the executable.
+- If export fails:
+  - Check write permissions for the chosen save folder.
