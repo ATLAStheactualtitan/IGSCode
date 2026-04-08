@@ -22,7 +22,7 @@ AllowNoIcons=yes
 LicenseFile=
 InfoBeforeFile=
 InfoAfterFile=
-OutputDir=installer_output
+OutputDir=..\installer_output
 OutputBaseFilename=IGSMapAnnotator-Setup
 SetupLogging=yes
 Compression=lzma
@@ -39,7 +39,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
 
 [Files]
-Source: "dist\IGSMapAnnotator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\IGSMapAnnotator\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
