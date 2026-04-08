@@ -84,6 +84,28 @@ Use it to place symbols, draw tactical overlays, measure distance and azimuth, a
 - Ctrl++ / Ctrl+-: Zoom in/out
 - Esc: Cancel active drawing mode action
 
+## Full Windows Installer (With Uninstall)
+
+If you want a full install experience (Start menu entry, desktop shortcut option, and uninstall support), use the Inno Setup files in this repo:
+
+- [installer/IGSMapAnnotator.iss](installer/IGSMapAnnotator.iss)
+- [scripts/build_installer.ps1](scripts/build_installer.ps1)
+
+Steps:
+
+1. Install Inno Setup 6.
+2. Run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build_installer.ps1
+```
+
+Output:
+
+- installer_output/IGSMapAnnotator-Setup.exe
+
+This installer writes uninstall information to Windows and can be removed from Apps & Features.
+
 ## Update Notification
 
 At launch, the app checks GitHub for a newer version and notifies you if one is available.
