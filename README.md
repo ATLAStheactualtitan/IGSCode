@@ -1,3 +1,6 @@
+# LATEST RELEASE! Version 1.0
+https://github.com/ATLAStheactualtitan/IGSCode/releases/tag/Version_1.0
+
 # IGS Map Annotator
 
 IGS Map Annotator is a Windows app for drawing and planning on Foxhole hex maps.
