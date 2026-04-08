@@ -46,7 +46,8 @@ ANNOT_ASSETS_DIR = os.path.join(RESOURCE_ROOT, "Annotassets")
 APP_ICON_PATH = os.path.join(ASSETS_DIR, "IGS.png")
 BASE_URL   = "https://war-service-live.foxholeservices.com/api"
 REPO_URL = "https://github.com/ATLAStheactualtitan/IGSCode"
-REPO_COMMITS_API = "https://api.github.com/repos/ATLAStheactualtitan/IGSCode/commits/main"
+REPO_RELEASES_LATEST_API = "https://api.github.com/repos/ATLAStheactualtitan/IGSCode/releases/latest"
+REPO_COMMITS_BY_REF_API = "https://api.github.com/repos/ATLAStheactualtitan/IGSCode/commits/{ref}"
 
 TOOL_SELECT   = "select"
 TOOL_LINE     = "line"
@@ -154,54 +155,111 @@ def _local_git_commit(repo_dir: str) -> str | None:
         return None
 
 
-def _latest_repo_commit() -> tuple[str | None, str | None]:
-    """Return latest remote commit hash and URL from GitHub."""
+def _latest_repo_release() -> dict:
+    """Return latest GitHub release metadata and commit SHA for its tag."""
     try:
-        response = requests.get(REPO_COMMITS_API, timeout=4)
+        response = requests.get(REPO_RELEASES_LATEST_API, timeout=4)
+        if response.status_code == 404:
+            return {
+                "status": "no-releases",
+                "message": "No releases published yet",
+            }
         response.raise_for_status()
         data = response.json() if response.content else {}
         if not isinstance(data, dict):
-            return None, None
-        sha = data.get("sha")
-        html_url = data.get("html_url") or REPO_URL
-        if isinstance(sha, str) and sha:
-            return sha, html_url if isinstance(html_url, str) else REPO_URL
-        return None, None
+            return {
+                "status": "unavailable",
+                "message": "Release check unavailable",
+            }
+
+        tag = data.get("tag_name")
+        release_url = data.get("html_url") or f"{REPO_URL}/releases"
+        if not isinstance(tag, str) or not tag:
+            return {
+                "status": "unavailable",
+                "message": "Release tag missing",
+            }
+
+        commit_response = requests.get(REPO_COMMITS_BY_REF_API.format(ref=tag), timeout=4)
+        commit_response.raise_for_status()
+        commit_data = commit_response.json() if commit_response.content else {}
+        if not isinstance(commit_data, dict):
+            return {
+                "status": "unavailable",
+                "message": "Release commit lookup unavailable",
+            }
+
+        sha = commit_data.get("sha")
+        if not isinstance(sha, str) or not sha:
+            return {
+                "status": "unavailable",
+                "message": "Release commit SHA missing",
+            }
+
+        return {
+            "status": "ok",
+            "tag": tag,
+            "sha": sha,
+            "url": release_url if isinstance(release_url, str) else f"{REPO_URL}/releases",
+        }
     except Exception:
-        return None, None
+        return {
+            "status": "unavailable",
+            "message": "Release check unavailable",
+        }
 
 
 def check_for_new_version(repo_dir: str) -> dict:
-    """Compare local commit with GitHub HEAD and report update availability."""
+    """Compare local commit with commit behind latest GitHub release tag."""
     local_sha = _local_git_commit(repo_dir)
-    remote_sha, remote_url = _latest_repo_commit()
+    release_info = _latest_repo_release()
+    release_status = release_info.get("status")
 
-    if remote_sha is None:
+    if release_status == "no-releases":
+        return {
+            "status": "no-releases",
+            "message": "No releases published yet",
+        }
+
+    if release_status != "ok":
         return {
             "status": "unavailable",
-            "message": "Update check unavailable",
+            "message": "Release check unavailable",
+        }
+
+    remote_sha = str(release_info.get("sha", ""))
+    remote_url = str(release_info.get("url", f"{REPO_URL}/releases"))
+    release_tag = str(release_info.get("tag", ""))
+
+    if not remote_sha:
+        return {
+            "status": "unavailable",
+            "message": "Release check unavailable",
         }
 
     if local_sha is None:
         return {
             "status": "unknown-local",
             "message": "Cannot determine local version",
+            "release_tag": release_tag,
             "remote_sha": remote_sha,
-            "remote_url": remote_url or REPO_URL,
+            "remote_url": remote_url,
         }
 
     if local_sha != remote_sha:
         return {
             "status": "update-available",
-            "message": "A newer version is available on GitHub",
+            "message": "A newer release is available on GitHub",
             "local_sha": local_sha,
             "remote_sha": remote_sha,
-            "remote_url": remote_url or REPO_URL,
+            "release_tag": release_tag,
+            "remote_url": remote_url,
         }
 
     return {
         "status": "up-to-date",
-        "message": "You are running the latest version",
+        "message": "You are running the latest release",
+        "release_tag": release_tag,
         "local_sha": local_sha,
         "remote_sha": remote_sha,
     }
@@ -1990,25 +2048,33 @@ def launch():
     status = update_info.get("status")
     if status == "update-available":
         remote_url = str(update_info.get("remote_url", REPO_URL))
+        release_tag = str(update_info.get("release_tag", ""))
         local_short = str(update_info.get("local_sha", ""))[:7]
         remote_short = str(update_info.get("remote_sha", ""))[:7]
         window.status_bar.showMessage(
-            f"Update available: local {local_short} -> remote {remote_short}"
+            f"Release update available: {release_tag or 'latest'} ({local_short} -> {remote_short})"
         )
         QMessageBox.information(
             window,
             "Update Available",
             (
                 "A newer version of this app is available.\n\n"
+                f"Latest release: {release_tag or 'unknown'}\n"
                 f"Local:  {local_short}\n"
                 f"Remote: {remote_short}\n\n"
-                f"Repository: {remote_url}"
+                f"Release page: {remote_url}"
             ),
         )
     elif status == "up-to-date":
-        window.status_bar.showMessage("Version check: app is up to date")
+        release_tag = str(update_info.get("release_tag", ""))
+        if release_tag:
+            window.status_bar.showMessage(f"Release check: up to date ({release_tag})")
+        else:
+            window.status_bar.showMessage("Release check: up to date")
+    elif status == "no-releases":
+        window.status_bar.showMessage("Release check: no releases published yet")
     else:
-        window.status_bar.showMessage("Version check unavailable")
+        window.status_bar.showMessage("Release check unavailable")
 
     sys.exit(app.exec())
 
