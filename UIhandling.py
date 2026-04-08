@@ -20,15 +20,15 @@ import requests
 from PySide6.QtCore import Qt, QThread, Signal, QPoint, QPointF, QRectF, QSize
 from PySide6.QtGui import (
     QPixmap, QFont, QColor, QPalette, QPen, QPainterPath, QIcon,
-    QPainter, QKeySequence, QShortcut, QBrush, QPolygonF,
+    QPainter, QKeySequence, QShortcut, QBrush, QPolygonF, QImage, QFontMetrics,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QComboBox, QLabel, QFrame, QGridLayout, QStatusBar,
     QToolBar, QToolButton, QButtonGroup, QPushButton, QSpinBox,
     QColorDialog, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem,
-    QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsTextItem, QGraphicsItem,
-    QGraphicsItemGroup, QScrollArea, QToolTip,
+    QGraphicsPathItem, QGraphicsPolygonItem, QGraphicsEllipseItem, QGraphicsTextItem, QGraphicsItem,
+    QGraphicsItemGroup, QScrollArea, QToolTip, QFileDialog, QMessageBox,
 )
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -41,10 +41,18 @@ TOOL_ARROW    = "arrow"
 TOOL_ZIGZAG   = "zigzag"
 TOOL_WAVE     = "wave"
 TOOL_POLYGON  = "polygon"
+TOOL_CIRCLE   = "circle"
+TOOL_RULER    = "ruler"
 TOOL_TEXT     = "text"
 TOOL_ERASE    = "erase"
 
 LINE_TOOLS = {TOOL_LINE, TOOL_ARROW, TOOL_ZIGZAG, TOOL_WAVE}
+LINE_TOOL_LABELS = {
+    TOOL_LINE: "Line",
+    TOOL_ARROW: "Arrow",
+    TOOL_ZIGZAG: "Tank line",
+    TOOL_WAVE: "Infantry line",
+}
 MAP_SYMBOL_SCALE = 0.0333333333
 FRIENDLY_COLOR_HEX = "#1200f4"
 ENEMY_COLOR_HEX = "#e100d8"
@@ -73,7 +81,15 @@ SYMBOLS = [
     {"key": "Rifle_Pill", "label": "Rifle Pill", "friendly": "F_Rifle_Pill.png", "enemy": "Rifle_Pill.png"},
     {"key": "Small_Ship", "label": "Small Ship", "friendly": "F_Small_Ship.png", "enemy": "Small_Ship.png"},
     {"key": "Triangle_B", "label": "Triangle B", "friendly": "F_Traingle_B.png", "enemy": "Triangle_B.png"},
-    {"key": "VP", "label": "VP", "friendly": None, "enemy": "VP.png"},
+    {"key": "VP", "label": "VP", "friendly": "F_VP.png", "enemy": "VP.png"},
+]
+
+SYMBOL_CATEGORY_ORDER = [
+    "Pill and 30mm AT",
+    "B and Gar",
+    "Bases",
+    "Emplaced",
+    "Misc",
 ]
 
 
@@ -159,6 +175,7 @@ class AnnotationView(QGraphicsView):
         self._tool       = TOOL_SELECT
         self._pen_color  = QColor("#ff4444")
         self._pen_width  = 3
+        self._text_size  = 12
         self._symbol_name: str | None = None
         self._symbol_pixmap: QPixmap | None = None
         self._symbol_preview_item: QGraphicsPixmapItem | None = None
@@ -167,8 +184,13 @@ class AnnotationView(QGraphicsView):
         # Node-based line drawing state
         self._line_nodes: list[QPointF] = []   # confirmed nodes
         self._polygon_nodes: list[QPointF] = []
+        self._circle_center: QPointF | None = None
         self._preview_item: QGraphicsPathItem | None = None  # live preview
         self._polygon_preview_item: QGraphicsPolygonItem | None = None
+        self._circle_preview_item: QGraphicsEllipseItem | None = None
+        self._ruler_origin: QPointF | None = None
+        self._ruler_line_item: QGraphicsPathItem | None = None
+        self._ruler_text_item: QGraphicsTextItem | None = None
 
         # Middle-mouse pan state
         self._panning  = False
@@ -187,6 +209,10 @@ class AnnotationView(QGraphicsView):
             self._cancel_line()
         if self._polygon_nodes and tool != self._tool:
             self._cancel_polygon()
+        if self._circle_center is not None and tool != self._tool:
+            self._cancel_circle()
+        if self._ruler_origin is not None and tool != self._tool:
+            self._clear_ruler()
         self._tool = tool
         cursor_map = {
             TOOL_SELECT: Qt.CursorShape.ArrowCursor,
@@ -195,6 +221,8 @@ class AnnotationView(QGraphicsView):
             TOOL_ZIGZAG: Qt.CursorShape.CrossCursor,
             TOOL_WAVE:   Qt.CursorShape.CrossCursor,
             TOOL_POLYGON: Qt.CursorShape.CrossCursor,
+            TOOL_CIRCLE: Qt.CursorShape.CrossCursor,
+            TOOL_RULER: Qt.CursorShape.CrossCursor,
             TOOL_TEXT:   Qt.CursorShape.IBeamCursor,
             TOOL_ERASE:  Qt.CursorShape.PointingHandCursor,
         }
@@ -210,6 +238,9 @@ class AnnotationView(QGraphicsView):
 
     def set_pen_width(self, width: int):
         self._pen_width = width
+
+    def set_text_size(self, size: int):
+        self._text_size = max(1, size)
 
     def set_symbol_stamp(self, name: str, pixmap: QPixmap):
         if pixmap.isNull():
@@ -231,8 +262,13 @@ class AnnotationView(QGraphicsView):
         self._ann_stack.clear()
         self._line_nodes = []
         self._polygon_nodes = []
+        self._circle_center = None
         self._preview_item = None
         self._polygon_preview_item = None
+        self._circle_preview_item = None
+        self._ruler_origin = None
+        self._ruler_line_item = None
+        self._ruler_text_item = None
         self._symbol_preview_item = None
         pixmap = QPixmap(path)
         self._pixmap_item = self._scene.addPixmap(pixmap)
@@ -246,8 +282,13 @@ class AnnotationView(QGraphicsView):
         self._ann_stack.clear()
         self._line_nodes = []
         self._polygon_nodes = []
+        self._circle_center = None
         self._preview_item = None
         self._polygon_preview_item = None
+        self._circle_preview_item = None
+        self._ruler_origin = None
+        self._ruler_line_item = None
+        self._ruler_text_item = None
         self._symbol_preview_item = None
         placeholder = self._scene.addText(
             "No map image available for this hexagon",
@@ -265,11 +306,94 @@ class AnnotationView(QGraphicsView):
         self._ann_stack.clear()
         self._line_nodes = []
         self._polygon_nodes = []
+        self._circle_center = None
         self._preview_item = None
         self._polygon_preview_item = None
+        self._circle_preview_item = None
+        self._ruler_origin = None
+        self._ruler_line_item = None
+        self._ruler_text_item = None
         self._symbol_preview_item = None
         if self._symbol_pixmap is not None:
             self._ensure_symbol_preview_item()
+
+    def cancel_active_drawing(self):
+        if self._line_nodes:
+            self._cancel_line()
+            return
+        if self._polygon_nodes:
+            self._cancel_polygon()
+            return
+        if self._circle_center is not None:
+            self._cancel_circle()
+            return
+        if self._ruler_origin is not None:
+            self._clear_ruler()
+
+    def _clear_ruler(self):
+        self._ruler_origin = None
+        if self._ruler_line_item is not None:
+            self._scene.removeItem(self._ruler_line_item)
+            self._ruler_line_item = None
+        if self._ruler_text_item is not None:
+            self._scene.removeItem(self._ruler_text_item)
+            self._ruler_text_item = None
+
+    def _set_ruler_origin(self, origin: QPointF):
+        self._clear_ruler()
+        self._ruler_origin = origin
+
+    def _ruler_distance_and_azimuth(self, current: QPointF) -> tuple[float, float]:
+        if self._ruler_origin is None:
+            return 0.0, 0.0
+
+        dx = current.x() - self._ruler_origin.x()
+        dy = current.y() - self._ruler_origin.y()
+
+        spec = self._grid_spec()
+        if spec is None:
+            dist_m = 0.0
+        else:
+            _, _, col_w, row_h = spec
+            meters_per_px_x = 125.0 / col_w if col_w > 0 else 0.0
+            meters_per_px_y = 125.0 / row_h if row_h > 0 else 0.0
+            dist_m = math.hypot(dx * meters_per_px_x, dy * meters_per_px_y)
+
+        azimuth = math.degrees(math.atan2(dx, -dy))
+        if azimuth < 0:
+            azimuth += 360.0
+        return dist_m, azimuth
+
+    def _update_ruler_preview(self, cursor_pos: QPointF):
+        if self._ruler_origin is None:
+            return
+
+        path = QPainterPath(self._ruler_origin)
+        path.lineTo(cursor_pos)
+        if self._ruler_line_item is None:
+            self._ruler_line_item = QGraphicsPathItem()
+            ruler_color = QColor("#f5c542")
+            self._ruler_line_item.setPen(QPen(ruler_color, max(1, self._pen_width), Qt.PenStyle.DashLine))
+            self._ruler_line_item.setZValue(2)
+            self._ruler_line_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._scene.addItem(self._ruler_line_item)
+        self._ruler_line_item.setPath(path)
+        self._ruler_line_item.show()
+
+        dist_m, azimuth = self._ruler_distance_and_azimuth(cursor_pos)
+        text = f"{dist_m:.1f} m | {azimuth:.1f}°"
+
+        if self._ruler_text_item is None:
+            self._ruler_text_item = QGraphicsTextItem()
+            self._ruler_text_item.setDefaultTextColor(QColor("#f2f7ff"))
+            self._ruler_text_item.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+            self._ruler_text_item.setZValue(3)
+            self._ruler_text_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._scene.addItem(self._ruler_text_item)
+
+        self._ruler_text_item.setPlainText(text)
+        self._ruler_text_item.setPos(cursor_pos + QPointF(12.0, -28.0))
+        self._ruler_text_item.show()
 
     def undo_last(self):
         if self._ann_stack:
@@ -506,6 +630,8 @@ class AnnotationView(QGraphicsView):
         path = self._build_path_for_tool(self._line_nodes)
         group = QGraphicsItemGroup()
         self._scene.addItem(group)
+        group.setData(0, "line_tool")
+        group.setData(1, LINE_TOOL_LABELS.get(self._tool, "Line"))
 
         path_item = QGraphicsPathItem(path)
         path_item.setPen(self._make_pen())
@@ -550,6 +676,68 @@ class AnnotationView(QGraphicsView):
             self._scene.removeItem(self._polygon_preview_item)
             self._polygon_preview_item = None
         self._polygon_nodes = []
+
+    def _update_circle_preview(self, cursor_pos: QPointF):
+        if self._circle_center is None:
+            return
+
+        radius = math.hypot(cursor_pos.x() - self._circle_center.x(), cursor_pos.y() - self._circle_center.y())
+        rect = QRectF(
+            self._circle_center.x() - radius,
+            self._circle_center.y() - radius,
+            radius * 2.0,
+            radius * 2.0,
+        )
+
+        if self._circle_preview_item is None:
+            self._circle_preview_item = QGraphicsEllipseItem()
+            self._circle_preview_item.setZValue(2)
+            self._circle_preview_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self._scene.addItem(self._circle_preview_item)
+
+        preview_pen = QPen(self._pen_color, max(1, self._pen_width), Qt.PenStyle.SolidLine)
+        preview_fill = QColor(self._pen_color)
+        preview_fill.setAlphaF(0.12)
+        self._circle_preview_item.setPen(preview_pen)
+        self._circle_preview_item.setBrush(QBrush(preview_fill))
+        self._circle_preview_item.setRect(rect)
+        self._circle_preview_item.show()
+
+    def _commit_circle(self, edge_pos: QPointF):
+        if self._circle_center is None:
+            return
+
+        radius = math.hypot(edge_pos.x() - self._circle_center.x(), edge_pos.y() - self._circle_center.y())
+        if radius < 1.0:
+            self._cancel_circle()
+            return
+
+        if self._circle_preview_item:
+            self._scene.removeItem(self._circle_preview_item)
+            self._circle_preview_item = None
+
+        circle_item = QGraphicsEllipseItem(
+            self._circle_center.x() - radius,
+            self._circle_center.y() - radius,
+            radius * 2.0,
+            radius * 2.0,
+        )
+        circle_item.setPen(self._make_pen())
+        fill_color = QColor(self._pen_color)
+        fill_color.setAlphaF(0.2)
+        circle_item.setBrush(QBrush(fill_color))
+        circle_item.setZValue(1)
+        circle_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
+        circle_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        self._scene.addItem(circle_item)
+        self._ann_stack.append(circle_item)
+        self._circle_center = None
+
+    def _cancel_circle(self):
+        if self._circle_preview_item:
+            self._scene.removeItem(self._circle_preview_item)
+            self._circle_preview_item = None
+        self._circle_center = None
 
     def _ensure_symbol_preview_item(self):
         if self._symbol_pixmap is None or self._pixmap_item is None:
@@ -597,6 +785,8 @@ class AnnotationView(QGraphicsView):
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         item.setZValue(1)
+        item.setData(0, "symbol")
+        item.setData(1, self._symbol_name or "Symbol")
         self._scene.addItem(item)
         self._ann_stack.append(item)
         self._update_symbol_preview(scene_pos)
@@ -678,6 +868,24 @@ class AnnotationView(QGraphicsView):
                     self._commit_polygon()
             return
 
+        if self._tool == TOOL_CIRCLE:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if self._circle_center is None:
+                    self._circle_center = scene_pos
+                else:
+                    self._commit_circle(scene_pos)
+            elif event.button() == Qt.MouseButton.RightButton:
+                self._cancel_circle()
+            return
+
+        if self._tool == TOOL_RULER:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._set_ruler_origin(scene_pos)
+                self._update_ruler_preview(scene_pos)
+            elif event.button() == Qt.MouseButton.RightButton:
+                self._clear_ruler()
+            return
+
         if self._tool in LINE_TOOLS:
             if event.button() == Qt.MouseButton.LeftButton:
                 # Start line or add first node
@@ -698,7 +906,7 @@ class AnnotationView(QGraphicsView):
             item = QGraphicsTextItem("Label")
             item.setPos(scene_pos)
             item.setDefaultTextColor(self._pen_color)
-            item.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+            item.setFont(QFont("Segoe UI", self._text_size, QFont.Weight.Bold))
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsFocusable)
@@ -743,6 +951,14 @@ class AnnotationView(QGraphicsView):
             self._update_polygon_preview(scene_pos)
             return
 
+        if self._tool == TOOL_CIRCLE and self._circle_center is not None:
+            self._update_circle_preview(scene_pos)
+            return
+
+        if self._tool == TOOL_RULER and self._ruler_origin is not None:
+            self._update_ruler_preview(scene_pos)
+            return
+
         if self._tool in LINE_TOOLS and self._line_nodes:
             self._update_preview(scene_pos)
         else:
@@ -761,6 +977,10 @@ class AnnotationView(QGraphicsView):
             pass
         elif self._tool == TOOL_POLYGON and len(self._polygon_nodes) >= 2:
             pass
+        elif self._tool == TOOL_CIRCLE and self._circle_center is not None:
+            pass
+        elif self._tool == TOOL_RULER and self._ruler_origin is not None:
+            pass
         else:
             super().mouseReleaseEvent(event)
 
@@ -769,6 +989,12 @@ class AnnotationView(QGraphicsView):
         self._hide_symbol_preview()
         if self._polygon_preview_item is not None:
             self._polygon_preview_item.hide()
+        if self._circle_preview_item is not None:
+            self._circle_preview_item.hide()
+        if self._ruler_line_item is not None:
+            self._ruler_line_item.hide()
+        if self._ruler_text_item is not None:
+            self._ruler_text_item.hide()
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):
@@ -780,17 +1006,45 @@ class AnnotationView(QGraphicsView):
             if self._polygon_nodes:
                 self._cancel_polygon()
                 return
+            if self._circle_center is not None:
+                self._cancel_circle()
+                return
+            if self._ruler_origin is not None:
+                self._clear_ruler()
+                return
         super().keyPressEvent(event)
+
+
+class HoverRevealRibbon(QFrame):
+    def __init__(self):
+        super().__init__()
+        self._secondary_row: QWidget | None = None
+        self.setMouseTracking(True)
+
+    def set_secondary_row(self, row: QWidget):
+        self._secondary_row = row
+        self._secondary_row.setVisible(False)
+
+    def enterEvent(self, event):
+        if self._secondary_row is not None:
+            self._secondary_row.setVisible(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self._secondary_row is not None:
+            self._secondary_row.setVisible(False)
+        super().leaveEvent(event)
 
 
 # --------------------------------------------------------------------------- #
 #  Main window                                                                 #
 # --------------------------------------------------------------------------- #
 class MainWindow(QMainWindow):
-    def __init__(self, client: WarAPIClient, hexagons: list[str]):
+    def __init__(self, client: WarAPIClient, hexagons: list[str], war_number: str = "—"):
         super().__init__()
         self.client   = client
         self.hexagons = hexagons
+        self._war_number = str(war_number) if war_number is not None else "—"
         self._worker: HexDataWorker | None = None
         self._active_workers: set[HexDataWorker] = set()
         self._current_hexagon: str | None = None
@@ -813,11 +1067,39 @@ class MainWindow(QMainWindow):
     #  UI construction                                                         #
     # ---------------------------------------------------------------------- #
     def _build_ui(self):
-        # ── Toolbar ──────────────────────────────────────────────────────── #
-        toolbar = QToolBar("Annotation Tools")
-        toolbar.setMovable(False)
-        toolbar.setStyleSheet("QToolBar { spacing: 4px; padding: 4px; }")
-        self.addToolBar(toolbar)
+        # ── Top ribbon ───────────────────────────────────────────────────── #
+        ribbon = HoverRevealRibbon()
+        ribbon.setObjectName("topRibbon")
+        ribbon.setStyleSheet(
+            "QFrame#topRibbon { background: #1a1f33; border-bottom: 1px solid #3b4666; }"
+            "QPushButton, QToolButton, QComboBox, QSpinBox { margin: 0px 2px; }"
+        )
+
+        ribbon_layout = QVBoxLayout(ribbon)
+        ribbon_layout.setContentsMargins(8, 6, 8, 6)
+        ribbon_layout.setSpacing(6)
+
+        row1 = QWidget()
+        row1_layout = QHBoxLayout(row1)
+        row1_layout.setContentsMargins(0, 0, 0, 0)
+        row1_layout.setSpacing(4)
+
+        row2 = QWidget()
+        row2_layout = QHBoxLayout(row2)
+        row2_layout.setContentsMargins(0, 0, 0, 0)
+        row2_layout.setSpacing(4)
+
+        def add_divider(layout: QHBoxLayout):
+            divider = QFrame()
+            divider.setFrameShape(QFrame.Shape.VLine)
+            divider.setFrameShadow(QFrame.Shadow.Plain)
+            divider.setStyleSheet("color: #46506e;")
+            layout.addWidget(divider)
+
+        ribbon_layout.addWidget(row1)
+        ribbon_layout.addWidget(row2)
+        ribbon.set_secondary_row(row2)
+        self.setMenuWidget(ribbon)
 
         self._tool_group = QButtonGroup(self)
         self._tool_group.setExclusive(True)
@@ -826,9 +1108,11 @@ class MainWindow(QMainWindow):
             ("Select",  TOOL_SELECT, "Select / move items  [S]"),
             ("Line",    TOOL_LINE,   "Straight line  [L]"),
             ("Arrow",   TOOL_ARROW,  "Arrow  [A]"),
-            ("Zigzag",  TOOL_ZIGZAG, "Zig-zag line  [Z]"),
-            ("Wave",    TOOL_WAVE,   "Wave line  [W]"),
+            ("Tank",    TOOL_ZIGZAG, "Tank line  [Z]"),
+            ("Inf",     TOOL_WAVE,   "Infantry line  [W]"),
             ("Polygon", TOOL_POLYGON, "Filled polygon  [P]"),
+            ("Circle",  TOOL_CIRCLE, "Filled circle  [C]"),
+            ("Ruler",   TOOL_RULER,  "Measure distance and azimuth  [R]"),
             ("Text",    TOOL_TEXT,   "Place text label  [T]"),
             ("Erase",   TOOL_ERASE,  "Click item to erase  [E]"),
         ]
@@ -840,33 +1124,33 @@ class MainWindow(QMainWindow):
             btn.setFont(QFont("Segoe UI", 10))
             btn.setMinimumWidth(68)
             self._tool_group.addButton(btn, i)
-            toolbar.addWidget(btn)
+            row1_layout.addWidget(btn)
 
         self._tool_group.buttons()[0].setChecked(True)
         self._tool_group.idClicked.connect(self._on_tool_selected)
         self._tools = [t for _, t, _ in tool_defs]
 
-        toolbar.addSeparator()
+        add_divider(row1_layout)
 
-        toolbar.addWidget(QLabel(" Hex: "))
+        row1_layout.addWidget(QLabel(" Hex: "))
         self.hex_combo = QComboBox()
         self.hex_combo.setFont(QFont("Segoe UI", 10))
         self.hex_combo.setMinimumWidth(180)
-        for name in self.hexagons:
+        for name in sorted(self.hexagons, key=str.casefold):
             self.hex_combo.addItem(name)
         self.hex_combo.currentTextChanged.connect(self._on_hex_selected)
-        toolbar.addWidget(self.hex_combo)
+        row1_layout.addWidget(self.hex_combo)
 
-        toolbar.addSeparator()
+        add_divider(row1_layout)
 
         # Color picker
-        toolbar.addWidget(QLabel(" Color: "))
+        row1_layout.addWidget(QLabel(" Color: "))
         self._color_btn = QPushButton()
         self._color_btn.setFixedSize(26, 26)
         self._color_btn.setToolTip("Pick annotation colour")
         self._refresh_color_btn()
         self._color_btn.clicked.connect(self._pick_color)
-        toolbar.addWidget(self._color_btn)
+        row1_layout.addWidget(self._color_btn)
 
         friendly_btn = QPushButton("Friendly")
         friendly_btn.setFont(QFont("Segoe UI", 9))
@@ -874,7 +1158,7 @@ class MainWindow(QMainWindow):
         friendly_btn.clicked.connect(
             lambda: self._set_main_color(FRIENDLY_COLOR_HEX, "Friendly")
         )
-        toolbar.addWidget(friendly_btn)
+        row1_layout.addWidget(friendly_btn)
 
         enemy_btn = QPushButton("Enemy")
         enemy_btn.setFont(QFont("Segoe UI", 9))
@@ -882,18 +1166,30 @@ class MainWindow(QMainWindow):
         enemy_btn.clicked.connect(
             lambda: self._set_main_color(ENEMY_COLOR_HEX, "Enemy")
         )
-        toolbar.addWidget(enemy_btn)
+        row1_layout.addWidget(enemy_btn)
+
+        row1_layout.addStretch(1)
 
         # Pen width
-        toolbar.addWidget(QLabel("  Width: "))
+        row2_layout.addWidget(QLabel(" Width: "))
         self._width_spin = QSpinBox()
         self._width_spin.setRange(1, 30)
         self._width_spin.setValue(3)
         self._width_spin.setFixedWidth(55)
         self._width_spin.valueChanged.connect(lambda v: self.canvas.set_pen_width(v))
-        toolbar.addWidget(self._width_spin)
+        row2_layout.addWidget(self._width_spin)
 
-        toolbar.addSeparator()
+        # Text size
+        row2_layout.addWidget(QLabel(" Text: "))
+        self._text_size_spin = QSpinBox()
+        self._text_size_spin.setRange(1, 96)
+        self._text_size_spin.setValue(12)
+        self._text_size_spin.setFixedWidth(60)
+        self._text_size_spin.setToolTip("Text label size")
+        self._text_size_spin.valueChanged.connect(lambda v: self.canvas.set_text_size(v))
+        row2_layout.addWidget(self._text_size_spin)
+
+        add_divider(row2_layout)
 
         # Zoom controls
         for label, tip, fn in [
@@ -905,22 +1201,30 @@ class MainWindow(QMainWindow):
             btn.setFont(QFont("Segoe UI", 10))
             btn.setToolTip(tip)
             btn.clicked.connect(fn)
-            toolbar.addWidget(btn)
+            row2_layout.addWidget(btn)
 
-        toolbar.addSeparator()
+        add_divider(row2_layout)
 
         # Undo / Clear
         undo_btn = QPushButton("Undo")
         undo_btn.setFont(QFont("Segoe UI", 10))
         undo_btn.setToolTip("Undo last annotation  [Ctrl+Z]")
         undo_btn.clicked.connect(lambda: self.canvas.undo_last())
-        toolbar.addWidget(undo_btn)
+        row2_layout.addWidget(undo_btn)
 
         clear_btn = QPushButton("Clear All")
         clear_btn.setFont(QFont("Segoe UI", 10))
         clear_btn.setToolTip("Remove all annotations")
         clear_btn.clicked.connect(lambda: self.canvas.clear_annotations())
-        toolbar.addWidget(clear_btn)
+        row2_layout.addWidget(clear_btn)
+
+        export_btn = QPushButton("Export PNG")
+        export_btn.setFont(QFont("Segoe UI", 10))
+        export_btn.setToolTip("Export current visible area with legend")
+        export_btn.clicked.connect(self._export_visible_png)
+        row2_layout.addWidget(export_btn)
+
+        row2_layout.addStretch(1)
 
         # ── Keyboard shortcuts ───────────────────────────────────────────── #
         QShortcut(QKeySequence("S"),                    self, lambda: self._on_tool_selected(0))
@@ -929,9 +1233,11 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("Z"),                    self, lambda: self._on_tool_selected(3))
         QShortcut(QKeySequence("W"),                    self, lambda: self._on_tool_selected(4))
         QShortcut(QKeySequence("P"),                    self, lambda: self._on_tool_selected(5))
-        QShortcut(QKeySequence("T"),                    self, lambda: self._on_tool_selected(6))
-        QShortcut(QKeySequence("E"),                    self, lambda: self._on_tool_selected(7))
-        QShortcut(QKeySequence("Escape"),               self, lambda: self.canvas._cancel_line())
+        QShortcut(QKeySequence("C"),                    self, lambda: self._on_tool_selected(6))
+        QShortcut(QKeySequence("R"),                    self, lambda: self._on_tool_selected(7))
+        QShortcut(QKeySequence("T"),                    self, lambda: self._on_tool_selected(8))
+        QShortcut(QKeySequence("E"),                    self, lambda: self._on_tool_selected(9))
+        QShortcut(QKeySequence("Escape"),               self, lambda: self.canvas.cancel_active_drawing())
         QShortcut(QKeySequence.StandardKey.ZoomIn,      self, lambda: self.canvas.zoom_in())
         QShortcut(QKeySequence.StandardKey.ZoomOut,     self, lambda: self.canvas.zoom_out())
         QShortcut(QKeySequence.StandardKey.Undo,        self, lambda: self.canvas.undo_last())
@@ -954,7 +1260,7 @@ class MainWindow(QMainWindow):
         palette_label.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         left_layout.addWidget(palette_label)
 
-        help_label = QLabel("Use the arrow beside a symbol to open its variants, then choose Friendly or Enemy.")
+        help_label = QLabel("Pick a category, then choose Friendly (F) or Enemy (E) for the symbol you want to stamp.")
         help_label.setWordWrap(True)
         help_label.setStyleSheet("color: #a6adc8;")
         left_layout.addWidget(help_label)
@@ -968,11 +1274,44 @@ class MainWindow(QMainWindow):
         scroll_content = QWidget()
         scroll_layout = QVBoxLayout(scroll_content)
         scroll_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.setSpacing(8)
+        scroll_layout.setSpacing(10)
 
+        grouped_symbols: dict[str, list[dict]] = {name: [] for name in SYMBOL_CATEGORY_ORDER}
         for symbol in SYMBOLS:
-            section = self._build_symbol_section(symbol)
-            scroll_layout.addWidget(section)
+            grouped_symbols[self._symbol_category(symbol)].append(symbol)
+
+        for category in SYMBOL_CATEGORY_ORDER:
+            symbols = grouped_symbols.get(category, [])
+            if not symbols:
+                continue
+
+            group_frame = QFrame()
+            group_frame.setFrameShape(QFrame.Shape.StyledPanel)
+            group_frame.setStyleSheet(
+                "QFrame { border: 1px solid #45475a; border-radius: 8px; background: #181825; }"
+            )
+            group_layout = QVBoxLayout(group_frame)
+            group_layout.setContentsMargins(8, 8, 8, 8)
+            group_layout.setSpacing(8)
+
+            group_title = QLabel(category)
+            group_title.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            group_title.setStyleSheet("color: #cdd6f4;")
+            group_layout.addWidget(group_title)
+
+            tile_grid = QGridLayout()
+            tile_grid.setContentsMargins(0, 0, 0, 0)
+            tile_grid.setHorizontalSpacing(8)
+            tile_grid.setVerticalSpacing(8)
+
+            columns = 2
+            for idx, symbol in enumerate(symbols):
+                row = idx // columns
+                col = idx % columns
+                tile_grid.addWidget(self._build_symbol_section(symbol), row, col)
+
+            group_layout.addLayout(tile_grid)
+            scroll_layout.addWidget(group_frame)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_content)
@@ -992,69 +1331,69 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Ready — select a hexagon")
         self._refresh_symbol_palette()
 
+    def _symbol_category(self, symbol: dict) -> str:
+        key = symbol.get("key", "")
+        if key in {"BB", "VP"} or key.startswith("Rel_B_"):
+            return "Bases"
+        if key in {"AA", "Empl_Anti_inf", "Empl_AT"}:
+            return "Emplaced"
+        if key in {"AT_Pill", "AT_Pill_30mm"} or "Pill" in key:
+            return "Pill and 30mm AT"
+        if key.endswith("_B") or "_Gar" in key:
+            return "B and Gar"
+        return "Misc"
+
     def _build_symbol_section(self, symbol: dict) -> QWidget:
         section = QFrame()
         section.setFrameShape(QFrame.Shape.StyledPanel)
         section.setStyleSheet(
-            "QFrame { border: 1px solid #45475a; border-radius: 6px; background: #181825; }"
-            "QToolButton { border: none; padding: 6px; }"
+            "QFrame { border: 1px solid #585b70; border-radius: 8px; background: #11111b; }"
         )
 
         layout = QVBoxLayout(section)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(6)
 
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(4)
+        preview = QToolButton()
+        preview.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        preview.setIconSize(QSize(54, 54))
+        preview.setFixedSize(86, 86)
+        preview.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        preview.setStyleSheet(
+            "QToolButton { border: 1px solid #6c7086; border-radius: 6px; background: #313244; padding: 4px; }"
+        )
+        self._symbol_buttons[symbol["key"]] = preview
+        layout.addWidget(preview, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        header = QToolButton()
-        header.setText(symbol["label"])
-        header.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        header.setIconSize(QSize(28, 28))
-        header.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        header.setStyleSheet("text-align: left; color: #cdd6f4;")
-        header.setEnabled(False)
-        self._symbol_buttons[symbol["key"]] = header
-        header_row.addWidget(header, stretch=1)
+        name = QLabel(symbol["label"])
+        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name.setWordWrap(True)
+        name.setStyleSheet("color: #cdd6f4;")
+        name.setMinimumHeight(28)
+        layout.addWidget(name)
 
-        toggle = QToolButton()
-        toggle.setCheckable(True)
-        toggle.setChecked(False)
-        toggle.setArrowType(Qt.ArrowType.RightArrow)
-        toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-        header_row.addWidget(toggle)
-        layout.addLayout(header_row)
+        variant_row = QHBoxLayout()
+        variant_row.setContentsMargins(0, 0, 0, 0)
+        variant_row.setSpacing(6)
 
-        content = QWidget()
-        content_layout = QHBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(6)
-
-        for variant_label, variant_key in [("Friendly", "friendly"), ("Enemy", "enemy")]:
+        for variant_label, variant_key, short_label in [
+            ("Friendly", "friendly", "F"),
+            ("Enemy", "enemy", "E"),
+        ]:
             button = QToolButton()
             button.setCheckable(True)
             button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
-            button.setIconSize(QSize(36, 36))
-            button.setMinimumSize(88, 74)
-            button.setText(variant_label)
+            button.setIconSize(QSize(28, 28))
+            button.setFixedSize(38, 54)
+            button.setText(short_label)
             button.setProperty("symbol_key", symbol["key"])
             button.setProperty("variant_key", variant_key)
             button.clicked.connect(self._on_symbol_button_clicked)
             self._symbol_button_group.addButton(button)
             self._variant_buttons[(symbol["key"], variant_key)] = button
-            content_layout.addWidget(button)
+            variant_row.addWidget(button)
 
-        content_layout.addStretch()
-        content.setVisible(False)
-
-        layout.addWidget(content)
-
-        def toggle_section(expanded: bool, panel=content, button=toggle):
-            panel.setVisible(expanded)
-            button.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
-
-        toggle.toggled.connect(toggle_section)
+        layout.addLayout(variant_row)
         return section
 
     # ---------------------------------------------------------------------- #
@@ -1073,6 +1412,14 @@ class MainWindow(QMainWindow):
             elif tool == TOOL_POLYGON:
                 self.status_bar.showMessage(
                     "Left-click to add polygon points  •  Right-click to fill polygon  •  Esc to cancel"
+                )
+            elif tool == TOOL_CIRCLE:
+                self.status_bar.showMessage(
+                    "Left-click center, move mouse, then left-click edge to fill circle  •  Right-click/Esc to cancel"
+                )
+            elif tool == TOOL_RULER:
+                self.status_bar.showMessage(
+                    "Left-click to set ruler origin  •  Move to read distance/azimuth  •  Right-click/Esc to clear"
                 )
             elif tool == TOOL_TEXT:
                 self.status_bar.showMessage("Left-click on the map to place a text label")
@@ -1114,8 +1461,24 @@ class MainWindow(QMainWindow):
         for symbol in SYMBOLS:
             header = self._symbol_buttons.get(symbol["key"])
             if header is not None:
-                preview_path = self._symbol_variant_path(symbol, "friendly") or self._symbol_variant_path(symbol, "enemy")
+                is_selected_symbol = symbol["key"] == self._selected_symbol_key
+                preview_variant = self._selected_symbol_variant if is_selected_symbol else "friendly"
+                preview_path = self._symbol_variant_path(symbol, preview_variant)
+                if preview_path is None:
+                    preview_path = self._symbol_variant_path(symbol, "friendly") or self._symbol_variant_path(symbol, "enemy")
                 header.setIcon(QIcon(preview_path) if preview_path else QIcon())
+
+                if is_selected_symbol and self._selected_symbol_variant == "enemy":
+                    accent = ENEMY_COLOR_HEX
+                elif is_selected_symbol:
+                    accent = FRIENDLY_COLOR_HEX
+                else:
+                    accent = "#6c7086"
+                header.setStyleSheet(
+                    "QToolButton { "
+                    f"border: 2px solid {accent}; border-radius: 6px; "
+                    "background: #313244; padding: 4px; }"
+                )
                 header.setToolTip(symbol["label"])
 
             for variant_key, variant_label in (("friendly", "Friendly"), ("enemy", "Enemy")):
@@ -1134,7 +1497,8 @@ class MainWindow(QMainWindow):
             symbol = self._symbol_definition(self._selected_symbol_key)
             path = self._symbol_variant_path(symbol, self._selected_symbol_variant) if symbol else None
             if symbol and path:
-                self.canvas.set_symbol_stamp(symbol["label"], QPixmap(path))
+                variant_name = self._selected_symbol_variant.title()
+                self.canvas.set_symbol_stamp(f"{variant_name} {symbol['label']}", QPixmap(path))
                 self.status_bar.showMessage(
                     f"Stamping {self._selected_symbol_variant} {symbol['label']} symbols"
                 )
@@ -1155,6 +1519,7 @@ class MainWindow(QMainWindow):
         for button in self._variant_buttons.values():
             button.setChecked(False)
         self._symbol_button_group.setExclusive(True)
+        self._refresh_symbol_palette()
 
     def _on_symbol_button_clicked(self, checked: bool):
         button = self.sender()
@@ -1178,10 +1543,254 @@ class MainWindow(QMainWindow):
 
         self._selected_symbol_key = symbol_key
         self._selected_symbol_variant = variant_key
-        self.canvas.set_symbol_stamp(symbol["label"], QPixmap(path))
+        self.canvas.set_symbol_stamp(f"{variant_key.title()} {symbol['label']}", QPixmap(path))
+        self._refresh_symbol_palette()
         self.status_bar.showMessage(
             f"Stamping {variant_key} {symbol['label']} symbols"
         )
+
+    def _collect_visible_legend(self, scene_rect: QRectF) -> tuple[list[tuple[str, QPixmap]], list[tuple[str, QPen]]]:
+        icon_entries: dict[str, QPixmap] = {}
+        line_entries: dict[str, QPen] = {}
+        processed: set[int] = set()
+
+        for item in self.canvas.scene().items(scene_rect, Qt.ItemSelectionMode.IntersectsItemShape):
+            top = item
+            while top.parentItem() is not None:
+                top = top.parentItem()
+
+            top_id = id(top)
+            if top_id in processed:
+                continue
+            processed.add(top_id)
+
+            ann_type = top.data(0)
+            ann_name = top.data(1)
+            if not isinstance(ann_name, str) or not ann_name:
+                continue
+
+            if ann_type == "symbol" and isinstance(top, QGraphicsPixmapItem):
+                icon_entries.setdefault(ann_name, top.pixmap())
+            elif ann_type == "line_tool" and isinstance(top, QGraphicsItemGroup):
+                for child in top.childItems():
+                    if isinstance(child, QGraphicsPathItem):
+                        line_entries.setdefault(ann_name, child.pen())
+                        break
+
+        icons = sorted(icon_entries.items(), key=lambda x: x[0].casefold())
+        lines = sorted(line_entries.items(), key=lambda x: x[0].casefold())
+        return icons, lines
+
+    def _wrap_legend_entries(self, entries: list[str], max_width: int, font: QFont) -> list[str]:
+        if not entries:
+            return []
+
+        metrics = QFontMetrics(font)
+        lines: list[str] = []
+        current = ""
+        for entry in entries:
+            candidate = entry if not current else f"{current}  |  {entry}"
+            if metrics.horizontalAdvance(candidate) <= max_width or not current:
+                current = candidate
+            else:
+                lines.append(current)
+                current = entry
+        if current:
+            lines.append(current)
+        return lines
+
+    def _export_visible_png(self):
+        if self.canvas.sceneRect().isEmpty():
+            QMessageBox.warning(self, "Export PNG", "Nothing to export right now.")
+            return
+
+        default_name = f"{self._current_hexagon or 'map'}_visible_export.png"
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Visible PNG",
+            default_name,
+            "PNG Images (*.png)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path = f"{path}.png"
+
+        visible_rect = self.canvas.mapToScene(self.canvas.viewport().rect()).boundingRect()
+        visible_rect = visible_rect.intersected(self.canvas.sceneRect())
+        if visible_rect.isEmpty():
+            QMessageBox.warning(self, "Export PNG", "Visible viewport area is empty.")
+            return
+
+        upscale = 3
+        export_width = max(1, self.canvas.viewport().width() * upscale)
+        export_height = max(1, self.canvas.viewport().height() * upscale)
+
+        base_image = QImage(export_width, export_height, QImage.Format.Format_ARGB32_Premultiplied)
+        base_image.fill(QColor("#1e1e2e"))
+
+        painter = QPainter(base_image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        painter.scale(upscale, upscale)
+        self.canvas.viewport().render(painter, QPoint(0, 0))
+        painter.end()
+
+        icons_used, lines_used = self._collect_visible_legend(visible_rect)
+
+        title_font = QFont("Segoe UI", 16, QFont.Weight.Bold)
+        body_font = QFont("Segoe UI", 12)
+        section_font = QFont("Segoe UI", 12, QFont.Weight.Bold)
+        footer_font = QFont("Segoe UI", 11)
+        body_metrics = QFontMetrics(body_font)
+        section_metrics = QFontMetrics(section_font)
+        title_metrics = QFontMetrics(title_font)
+        footer_metrics = QFontMetrics(footer_font)
+
+        row_height = max(34, body_metrics.lineSpacing() + 8)
+        section_gap = 8
+
+        enemy_icons: dict[str, tuple[str, QPixmap]] = {}
+        friendly_icons: dict[str, tuple[str, QPixmap]] = {}
+        neutral_icons: dict[str, tuple[str, QPixmap]] = {}
+        for name, pixmap in icons_used:
+            lower = name.casefold()
+            if lower.startswith("enemy "):
+                base_name = name[6:].strip()
+                enemy_icons[base_name] = (name, pixmap)
+            elif lower.startswith("friendly "):
+                base_name = name[9:].strip()
+                friendly_icons[base_name] = (name, pixmap)
+            else:
+                neutral_icons[name] = (name, pixmap)
+
+        icon_rows: list[tuple[tuple[str, QPixmap] | None, tuple[str, QPixmap] | None]] = []
+        paired_names = sorted(set(enemy_icons) | set(friendly_icons), key=str.casefold)
+        for base_name in paired_names:
+            icon_rows.append((enemy_icons.get(base_name), friendly_icons.get(base_name)))
+        for neutral_name in sorted(neutral_icons, key=str.casefold):
+            icon_rows.append((None, neutral_icons[neutral_name]))
+
+        legend_height = 24 + title_metrics.height() + 12
+        if icon_rows:
+            legend_height += section_metrics.height() + 6 + (len(icon_rows) * row_height) + section_gap
+        if lines_used:
+            legend_height += section_metrics.height() + 6 + (len(lines_used) * row_height) + section_gap
+        if not icon_rows and not lines_used:
+            legend_height += body_metrics.lineSpacing() + section_gap
+        legend_height += 14 + footer_metrics.height() + 24
+
+        final_image = QImage(
+            export_width,
+            export_height + legend_height,
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        final_image.fill(QColor("#0f1117"))
+
+        final_painter = QPainter(final_image)
+        final_painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        final_painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        final_painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        final_painter.drawImage(0, 0, base_image)
+
+        legend_top = export_height
+        final_painter.fillRect(0, legend_top, export_width, legend_height, QColor("#1f355a"))
+
+        x = 24
+        preview_x = x
+        label_x = x + 44
+        y = legend_top + 24
+        final_painter.setPen(QColor("#e6edf3"))
+        final_painter.setFont(title_font)
+        final_painter.drawText(x, y + title_metrics.ascent(), "Legend (Visible Area)")
+        y += title_metrics.height() + 12
+
+        if icon_rows:
+            final_painter.setFont(section_font)
+            final_painter.setPen(QColor("#dce6ff"))
+            final_painter.drawText(x, y + section_metrics.ascent(), "Icons (Enemy | Friendly)")
+            y += section_metrics.height() + 6
+
+            col_width = max(120, (export_width - (x * 2)) // 2)
+            enemy_preview_x = x
+            enemy_label_x = x + 44
+            friendly_preview_x = x + col_width
+            friendly_label_x = friendly_preview_x + 44
+
+            final_painter.setFont(body_font)
+            final_painter.setPen(QColor("#e6edf3"))
+            for enemy_entry, friendly_entry in icon_rows:
+                baseline = y + ((row_height + body_metrics.ascent() - body_metrics.descent()) // 2)
+
+                if enemy_entry is not None:
+                    name, pixmap = enemy_entry
+                    icon = pixmap.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    iy = y + max(0, (row_height - icon.height()) // 2)
+                    ix = enemy_preview_x + max(0, (30 - icon.width()) // 2)
+                    final_painter.drawPixmap(ix, iy, icon)
+                    final_painter.drawText(enemy_label_x, baseline, name)
+
+                if friendly_entry is not None:
+                    name, pixmap = friendly_entry
+                    icon = pixmap.scaled(30, 30, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                    iy = y + max(0, (row_height - icon.height()) // 2)
+                    ix = friendly_preview_x + max(0, (30 - icon.width()) // 2)
+                    final_painter.drawPixmap(ix, iy, icon)
+                    final_painter.drawText(friendly_label_x, baseline, name)
+
+                y += row_height
+            y += section_gap
+
+        if lines_used:
+            final_painter.setFont(section_font)
+            final_painter.setPen(QColor("#dce6ff"))
+            final_painter.drawText(x, y + section_metrics.ascent(), "Lines and Arrows")
+            y += section_metrics.height() + 6
+
+            final_painter.setFont(body_font)
+            for name, pen in lines_used:
+                sample_pen = QPen(pen)
+                sample_pen.setWidth(max(2, min(8, int(round(max(1.0, pen.widthF()) * 2.0)))))
+                sample_pen.setCosmetic(True)
+                final_painter.setPen(sample_pen)
+                mid_y = y + row_height // 2
+                final_painter.drawLine(preview_x + 2, mid_y, preview_x + 34, mid_y)
+
+                if "arrow" in name.lower():
+                    final_painter.setBrush(sample_pen.color())
+                    arrow = QPolygonF([
+                        QPointF(preview_x + 34, mid_y),
+                        QPointF(preview_x + 28, mid_y - 4),
+                        QPointF(preview_x + 28, mid_y + 4),
+                    ])
+                    final_painter.drawPolygon(arrow)
+                    final_painter.setBrush(Qt.BrushStyle.NoBrush)
+
+                final_painter.setPen(QColor("#e6edf3"))
+                baseline = y + ((row_height + body_metrics.ascent() - body_metrics.descent()) // 2)
+                final_painter.drawText(label_x, baseline, name)
+                y += row_height
+            y += section_gap
+
+        if not icon_rows and not lines_used:
+            final_painter.setFont(body_font)
+            final_painter.setPen(QColor("#e6edf3"))
+            final_painter.drawText(x, y + body_metrics.ascent(), "No icons, lines, or arrows used in the visible area.")
+            y += body_metrics.lineSpacing() + section_gap
+
+        y += 14
+        footer = f"Made with CMRC IGS  |  War {self._war_number}"
+        final_painter.setFont(footer_font)
+        final_painter.setPen(QColor("#9aa4b2"))
+        final_painter.drawText(x, y + footer_metrics.ascent(), footer)
+        final_painter.end()
+
+        if not final_image.save(path, "PNG"):
+            QMessageBox.critical(self, "Export PNG", "Failed to save the PNG file.")
+            return
+
+        self.status_bar.showMessage(f"Exported visible area to {path}")
 
     # ---------------------------------------------------------------------- #
     #  Event handlers                                                          #
@@ -1216,6 +1825,8 @@ class MainWindow(QMainWindow):
     def _on_data_ready(self, hexagon: str, dynamic: dict, war_report: dict):
         if hexagon != self._current_hexagon:
             return
+        if war_report.get("warNumber") is not None:
+            self._war_number = str(war_report.get("warNumber"))
         # colonialCasualties / wardenCasualties fetched but not shown per requirements
         self.status_bar.showMessage(f"{hexagon} — ready")
         self._populate_info_box({
@@ -1276,10 +1887,17 @@ class MainWindow(QMainWindow):
 def launch():
     client   = WarAPIClient()
     hexagons = client.get_maps()
+    war_number = "—"
+    try:
+        war_data = client.get_war()
+        if isinstance(war_data, dict):
+            war_number = str(war_data.get("warNumber", "—"))
+    except Exception:
+        war_number = "—"
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    window = MainWindow(client, hexagons)
+    window = MainWindow(client, hexagons, war_number=war_number)
     window.show()
     sys.exit(app.exec())
 
