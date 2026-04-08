@@ -125,3 +125,5 @@ Repository:
   - Ensure the Annotassets folder is present next to the executable.
 - If export fails:
   - Check write permissions for the chosen save folder.
+
+This application was written with aid from Github's Copilot AI
