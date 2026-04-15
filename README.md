@@ -1,5 +1,5 @@
 # LATEST RELEASE! Version 1.1
-[https://github.com/ATLAStheactualtitan/IGSCode/releases/tag/Version_1.0](https://github.com/ATLAStheactualtitan/IGSCode/releases/tag/Version_1.1)
+[https://github.com/ATLAStheactualtitan/IGSCode/releases/tag/Version_1.1](https://github.com/ATLAStheactualtitan/IGSCode/releases/tag/Version_1.1)
 
 # IGS Map Annotator
 
